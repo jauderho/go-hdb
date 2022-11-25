@@ -1,7 +1,48 @@
 Release Notes
 =============
 
+## Release 0.111
+
+Release 0.111.1 (upgrade urgency: low)
+
+- Some minor fixes and source code cleanups
+
+#### Release Notes
+
+- X509 authentication: check validity period of client certificates before connecting to database (incompatible change)
+
+  added additional error return parameter to NewX509AuthConnector because of early X509 certificate and key validation
+
+## Release 0.110
+
+Release 0.110.1 (upgrade urgency: no need for upgrade)
+
+- Added .reuse/dep5 to replace individual licence comments / files
+
+#### Release Notes
+
+- Bulk operation (incompatible change)
+  
+  Due to 'historical' reasons go-hdb does support the following alternatives executing 'bulk' operations:  
+  - via query ("bulk insert ...")
+  - via named arguments (Flush / NoFlush)
+  - via 'many' supporting one and two dimensional slices, arrays
+  - via extended parameter list with (len(args)%'#of paramerters' == 0
+  - via function argument (func(args []any) error)
+  
+  As to the restrictions and redundancy comming with some of the options the first three are going to be set to deprecated
+  and the latter two (extended arguments and function argument) are kept going forward. Until go-hdb release V1.0 would
+  be available the deprecated options can be used further by switching on connector 'legacy mode'.
+    
 ## Release 0.109
+
+Release 0.109.2 (upgrade urgency: high)
+
+- Fixed bulk function execute issue
+
+Release 0.109.1 (upgrade urgency: no need for upgrade)
+
+- Some minor source code cleanups
 
 #### Release Notes
 

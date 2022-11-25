@@ -1,13 +1,11 @@
-// SPDX-FileCopyrightText: 2014-2022 SAP SE
-//
-// SPDX-License-Identifier: Apache-2.0
-
 package driver
 
 import (
 	"context"
 	"database/sql/driver"
 	"os"
+
+	"github.com/SAP/go-hdb/driver/internal/protocol/x509"
 )
 
 /*
@@ -18,7 +16,8 @@ type Connector struct {
 	*connAttrs
 	*authAttrs
 
-	newConn func(ctx context.Context, connAttrs *connAttrs, authAttrs *authAttrs) (driver.Conn, error)
+	connHook func(driver.Conn) driver.Conn
+	newConn  func(ctx context.Context, connAttrs *connAttrs, authAttrs *authAttrs) (driver.Conn, error)
 }
 
 // NewConnector returns a new Connector instance with default values.
@@ -35,19 +34,21 @@ func NewConnector() *Connector {
 // NewBasicAuthConnector creates a connector for basic authentication.
 func NewBasicAuthConnector(host, username, password string) *Connector {
 	c := NewConnector()
-	c.connAttrs._host = host
-	c.authAttrs._username = username
-	c.authAttrs._password = password
+	c._host = host
+	c._username = username
+	c._password = password
 	return c
 }
 
 // NewX509AuthConnector creates a connector for X509 (client certificate) authentication.
-func NewX509AuthConnector(host string, clientCert, clientKey []byte) *Connector {
+func NewX509AuthConnector(host string, clientCert, clientKey []byte) (*Connector, error) {
 	c := NewConnector()
-	c.connAttrs._host = host
-	c.authAttrs._clientCert = clientCert
-	c.authAttrs._clientKey = clientKey
-	return c
+	c._host = host
+	var err error
+	if c._certKey, err = x509.NewCertKey(clientCert, clientKey); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // NewX509AuthConnectorByFiles creates a connector for X509 (client certificate) authentication
@@ -61,30 +62,30 @@ func NewX509AuthConnectorByFiles(host, clientCertFile, clientKeyFile string) (*C
 	if err != nil {
 		return nil, err
 	}
-	return NewX509AuthConnector(host, clientCert, clientKey), nil
+	return NewX509AuthConnector(host, clientCert, clientKey)
 }
 
 // NewJWTAuthConnector creates a connector for token (JWT) based authentication.
 func NewJWTAuthConnector(host, token string) *Connector {
 	c := NewConnector()
-	c.connAttrs._host = host
-	c.authAttrs._token = token
+	c._host = host
+	c._token = token
 	return c
 }
 
 func newDSNConnector(dsn *DSN) (*Connector, error) {
 	c := NewConnector()
-	c.connAttrs._host = dsn.host
-	c.connAttrs._pingInterval = dsn.pingInterval
-	c.connAttrs._defaultSchema = dsn.defaultSchema
-	c.connAttrs.setTimeout(dsn.timeout)
+	c._host = dsn.host
+	c._pingInterval = dsn.pingInterval
+	c._defaultSchema = dsn.defaultSchema
+	c.setTimeout(dsn.timeout)
 	if dsn.tls != nil {
 		if err := c.connAttrs.setTLS(dsn.tls.ServerName, dsn.tls.InsecureSkipVerify, dsn.tls.RootCAFiles); err != nil {
 			return nil, err
 		}
 	}
-	c.authAttrs._username = dsn.username
-	c.authAttrs._password = dsn.password
+	c._username = dsn.username
+	c._password = dsn.password
 	return c, nil
 }
 
@@ -102,8 +103,19 @@ func (c *Connector) NativeDriver() Driver { return stdHdbDriver }
 
 // Connect implements the database/sql/driver/Connector interface.
 func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
-	return c.newConn(ctx, c.connAttrs.clone(), c.authAttrs)
+	conn, err := c.newConn(ctx, c.connAttrs.clone(), c.authAttrs)
+	if err != nil {
+		return nil, err
+	}
+	if c.connHook != nil {
+		conn = c.connHook(conn)
+	}
+	return conn, err
 }
 
 // Driver implements the database/sql/driver/Connector interface.
 func (c *Connector) Driver() driver.Driver { return stdHdbDriver }
+
+// SetConnHook sets a function for intercepting connection creation.
+// This is for internal use only and might be changed or disabled in future.
+func (c *Connector) SetConnHook(fn func(driver.Conn) driver.Conn) { c.connHook = fn }

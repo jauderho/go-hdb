@@ -1,7 +1,3 @@
-# SPDX-FileCopyrightText: 2014-2022 SAP SE
-# 
-# SPDX-License-Identifier: Apache-2.0
-
 # builds and tests project via go tools
 all:
 	@echo "update dependencies"
@@ -15,7 +11,7 @@ all:
 	@echo execute tests on latest go version	
 	go test ./...
 	@echo execute tests on older supported go versions
-	go1.18.7 test ./...
+	go1.18.8 test ./...
 	@echo "reuse (license) check"
 	reuse lint
 
@@ -30,8 +26,8 @@ tools:
 
 #install additional go versions
 go:
-	go install golang.org/dl/go1.18.7@latest
-	go1.18.7 download
+	go install golang.org/dl/go1.18.8@latest
+	go1.18.8 download
 
 #install fsfe reuse tool (https://git.fsfe.org/reuse/tool)
 # pre-conditions:

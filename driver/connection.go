@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: 2014-2022 SAP SE
-//
-// SPDX-License-Identifier: Apache-2.0
-
 package driver
 
 import (
@@ -25,6 +21,7 @@ import (
 	p "github.com/SAP/go-hdb/driver/internal/protocol"
 
 	"github.com/SAP/go-hdb/driver/internal/protocol/scanner"
+	"github.com/SAP/go-hdb/driver/internal/protocol/x509"
 	"github.com/SAP/go-hdb/driver/sqltrace"
 	"github.com/SAP/go-hdb/driver/unicode/cesu8"
 	"golang.org/x/text/transform"
@@ -75,6 +72,8 @@ const (
 	setDefaultSchema  = "set schema"
 )
 
+var errBulkExecDeprecated = errors.New("bulk exec option is deprecated")
+
 // bulk statement
 const (
 	bulk = "b$"
@@ -87,8 +86,10 @@ var (
 
 var (
 	// NoFlush is to be used as parameter in bulk statements to delay execution.
+	// Deprecated
 	NoFlush = sql.Named(bulk, &noFlushTok)
 	// Flush can be used as optional parameter in bulk statements but is not required to trigger execution.
+	// Deprecated
 	Flush = sql.Named(bulk, &flushTok)
 )
 
@@ -257,9 +258,14 @@ type conn struct {
 	pw *p.Writer
 }
 
-func isAuthError(checkErr error) bool {
+// isAuthError returns true in case of X509 certificate validation errrors or hdb authentication errors, else otherwise.
+func isAuthError(err error) bool {
+	var validationError *x509.ValidationError
+	if errors.As(err, &validationError) {
+		return true
+	}
 	var hdbErrors *p.HdbErrors
-	if !errors.As(checkErr, &hdbErrors) {
+	if !errors.As(err, &hdbErrors) {
 		return false
 	}
 	return hdbErrors.Code() == p.HdbErrAuthenticationFailed
@@ -291,7 +297,14 @@ func newConn(ctx context.Context, metrics *metrics, connAttrs *connAttrs, authAt
 		if !isAuthError(err) {
 			return nil, err
 		}
-		if retries < 1 || !authAttrs.refresh(auth) {
+		if retries < 1 {
+			return nil, err
+		}
+		refresh, refreshErr := authAttrs.refresh(auth)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		if !refresh {
 			return nil, err
 		}
 		retries--
@@ -885,7 +898,7 @@ func (s *stmt) convert(field *p.ParameterField, arg any) (any, error) {
 }
 
 /*
-central function to extend argiment handling by
+central function to extend argument handling by
 - potentially handle named parameters (HANA does not support them)
 - handle out parameters for function calls (HANA supports named out parameters)
 */
@@ -1067,7 +1080,7 @@ func (s *stmt) execMany(nvargs []driver.NamedValue) (driver.Result, error) {
 
 	numField := s.pr.numField()
 
-	it, err := newArgsScanner(numField, nvargs)
+	it, err := newArgsScanner(numField, nvargs, c._legacy) //TODO: remove legacy starting with V1.0
 	if err != nil {
 		return nil, err
 	}
@@ -1075,6 +1088,7 @@ func (s *stmt) execMany(nvargs []driver.NamedValue) (driver.Result, error) {
 	defer func() { s.resetArgs() }() // reset args
 
 	totalRowsAffected := totalRowsAffected(0)
+	recOfs := 0
 	numRec := 0
 
 	args := make([]driver.NamedValue, numField)
@@ -1095,12 +1109,17 @@ func (s *stmt) execMany(nvargs []driver.NamedValue) (driver.Result, error) {
 		s.nvargs = append(s.nvargs, args...)
 		numRec++
 		if numRec >= c._bulkSize {
+			recOfs += c._bulkSize
 			r, err := c._execBulk(s.pr, s.nvargs, !c.inTx)
 			totalRowsAffected.add(r)
 			if err != nil {
+				if hdbErr, ok := err.(*p.HdbErrors); recOfs != 0 && ok {
+					hdbErr.SetStmtsNoOfs(recOfs)
+				}
 				return driver.RowsAffected(totalRowsAffected), err
 			}
 			numRec = 0
+			s.nvargs = s.nvargs[:0]
 		}
 	}
 
@@ -1108,6 +1127,9 @@ func (s *stmt) execMany(nvargs []driver.NamedValue) (driver.Result, error) {
 		r, err := c._execBulk(s.pr, s.nvargs, !c.inTx)
 		totalRowsAffected.add(r)
 		if err != nil {
+			if hdbErr, ok := err.(*p.HdbErrors); recOfs != 0 && ok {
+				hdbErr.SetStmtsNoOfs(recOfs)
+			}
 			return driver.RowsAffected(totalRowsAffected), err
 		}
 	}
@@ -1117,6 +1139,10 @@ func (s *stmt) execMany(nvargs []driver.NamedValue) (driver.Result, error) {
 
 func (s *stmt) execBulk(nvargs []driver.NamedValue) (driver.Result, error) {
 	c := s.conn
+	// check deprecated
+	if !c._legacy {
+		return nil, errBulkExecDeprecated
+	}
 
 	flush := s.flush
 	s.flush = false
@@ -1173,11 +1199,17 @@ func (s *stmt) CheckNamedValue(nv *driver.NamedValue) error {
 		if ptr, ok := nv.Value.(**struct{}); ok {
 			switch ptr {
 			case &noFlushTok:
+				if !s.conn._legacy {
+					return errBulkExecDeprecated
+				}
 				if s.stmtKind == skExec { // turn on bulk
 					s.stmtKind = skBulk
 				}
 				return driver.ErrRemoveArgument
 			case &flushTok:
+				if !s.conn._legacy {
+					return errBulkExecDeprecated
+				}
 				s.flush = true
 				return driver.ErrRemoveArgument
 			}
@@ -1457,9 +1489,6 @@ func (c *conn) _execBulk(pr *prepareResult, nvargs []driver.NamedValue, commit b
 		*/
 		if hasNext || i == (numRows-1) {
 			r, err := c._exec(pr, nvargs[lastFrom:to], true, commit)
-			//if err != nil {
-			//	return driver.RowsAffected(totRowsAffected), err
-			//}
 			if rowsAffected, err := r.RowsAffected(); err != nil {
 				totRowsAffected += rowsAffected
 			}

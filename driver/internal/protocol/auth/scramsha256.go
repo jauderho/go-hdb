@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: 2014-2022 SAP SE
-//
-// SPDX-License-Identifier: Apache-2.0
-
 package auth
 
 // Salted Challenge Response Authentication Mechanism (SCRAM)
@@ -37,9 +33,10 @@ func (a *SCRAMSHA256) Typ() string { return MtSCRAMSHA256 }
 func (a *SCRAMSHA256) Order() byte { return MoSCRAMSHA256 }
 
 // PrepareInitReq implements the Method interface.
-func (a *SCRAMSHA256) PrepareInitReq(prms *Prms) {
+func (a *SCRAMSHA256) PrepareInitReq(prms *Prms) error {
 	prms.addString(a.Typ())
 	prms.addBytes(a.clientChallenge)
+	return nil
 }
 
 // InitRepDecode implements the Method interface.

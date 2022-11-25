@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: 2014-2022 SAP SE
-//
-// SPDX-License-Identifier: Apache-2.0
-
 // Package auth provides authentication methods.
 package auth
 
@@ -40,7 +36,7 @@ type Method interface {
 	fmt.Stringer
 	Typ() string
 	Order() byte
-	PrepareInitReq(prms *Prms)
+	PrepareInitReq(prms *Prms) error
 	InitRepDecode(d *Decoder) error
 	PrepareFinalReq(prms *Prms) error
 	FinalRepDecode(d *Decoder) error
